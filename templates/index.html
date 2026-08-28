@@ -1,0 +1,211 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stockfish + Randomfish</title>
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#20252e; --text:#f4f7fb;
+  --muted:#9ba7b4; --accent:#70e1a1; --danger:#ff7a90; --gold:#ffd166;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; min-height:100vh; background:radial-gradient(circle at top,#18202b,#0f1115 45%);
+  color:var(--text); font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+}
+.wrap{max-width:1100px;margin:0 auto;padding:28px}
+h1{font-size:clamp(2rem,5vw,4rem);margin:.1em 0}
+.sub{color:var(--muted);font-size:1.08rem}
+.grid{display:grid;grid-template-columns:minmax(320px,620px) minmax(260px,1fr);gap:24px;align-items:start}
+.card{background:rgba(23,26,33,.94);border:1px solid #2c3440;border-radius:22px;padding:20px;box-shadow:0 18px 50px #0005}
+.board{
+  width:100%;aspect-ratio:1;display:grid;grid-template-columns:repeat(8,1fr);
+  overflow:hidden;border-radius:16px;border:4px solid #303844;user-select:none
+}
+.sq{display:grid;place-items:center;font-size:clamp(28px,6vw,62px);position:relative;cursor:pointer}
+.light{background:#e7dcc8}.dark{background:#67806b}
+.sq.sel{outline:5px solid var(--gold);outline-offset:-5px}
+.sq::after{content:attr(data-coord);position:absolute;left:5px;bottom:2px;font-size:10px;color:#0008;font-weight:800}
+.controls{display:grid;gap:16px}
+label{font-weight:800}
+input[type=range]{width:100%}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center}
+.badge{padding:9px 13px;border-radius:999px;font-weight:900;letter-spacing:.05em;background:#2a303a}
+.badge.good{background:#183b2b;color:#8cf0b6}
+.badge.bad{background:#48222b;color:#ff9daf}
+button{
+  border:0;border-radius:14px;padding:12px 15px;background:#2a313c;color:white;
+  font-weight:800;cursor:pointer;font-size:1rem
+}
+button.primary{background:#35b978;color:#07140d}
+button:hover{filter:brightness(1.08)}
+.status{min-height:85px;padding:14px;border-radius:14px;background:#101319;color:#cbd5df;line-height:1.5}
+.small{font-size:.9rem;color:var(--muted)}
+code{background:#0c0e12;padding:2px 6px;border-radius:6px}
+@media(max-width:820px){.grid{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>🐟 Stockfish + Randomfish 🎲</h1>
+  <p class="sub">Half genius. Half catastrophic chess decisions.</p>
+
+  <div class="grid">
+    <div class="card">
+      <div id="board" class="board"></div>
+    </div>
+
+    <div class="card controls">
+      <div>
+        <div class="row">
+          <label for="chaos">Randomfish probability</label>
+          <strong id="chaosLabel">50%</strong>
+        </div>
+        <input id="chaos" type="range" min="0" max="100" value="50">
+        <div class="small">0% = normal Stockfish · 100% = always choose the worst ranked legal move.</div>
+      </div>
+
+      <div>
+        <div class="row">
+          <label for="think">Thinking time</label>
+          <strong id="thinkLabel">0.12s</strong>
+        </div>
+        <input id="think" type="range" min="3" max="100" value="12">
+      </div>
+
+      <div class="row">
+        <span>Last fish mode</span>
+        <span id="mode" class="badge">WAITING</span>
+      </div>
+
+      <div id="status" class="status">
+        You are White. Click a piece, then click its destination.
+      </div>
+
+      <button id="reset" class="primary">New Game</button>
+
+      <div class="small">
+        Promotion automatically uses a queen for click-moves. The backend uses Stockfish MultiPV to rank every legal reply, then flips the chaos coin.
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const PIECES = {
+  P:"♙",N:"♘",B:"♗",R:"♖",Q:"♕",K:"♔",
+  p:"♟",n:"♞",b:"♝",r:"♜",q:"♛",k:"♚"
+};
+let selected = null;
+let fen = "startpos";
+let busy = false;
+
+const boardEl = document.getElementById("board");
+const statusEl = document.getElementById("status");
+const modeEl = document.getElementById("mode");
+const chaos = document.getElementById("chaos");
+const think = document.getElementById("think");
+
+chaos.oninput = () => document.getElementById("chaosLabel").textContent = chaos.value + "%";
+think.oninput = () => document.getElementById("thinkLabel").textContent = (think.value/100).toFixed(2) + "s";
+
+function parseFen(fenStr){
+  const rows = fenStr.split(" ")[0].split("/");
+  const out = {};
+  for(let r=0;r<8;r++){
+    let file=0;
+    for(const ch of rows[r]){
+      if(/\d/.test(ch)) file += Number(ch);
+      else {
+        const coord = String.fromCharCode(97+file) + (8-r);
+        out[coord]=ch; file++;
+      }
+    }
+  }
+  return out;
+}
+
+function draw(){
+  const pieces = parseFen(fen);
+  boardEl.innerHTML="";
+  for(let rank=8;rank>=1;rank--){
+    for(let f=0;f<8;f++){
+      const file=String.fromCharCode(97+f);
+      const coord=file+rank;
+      const sq=document.createElement("div");
+      sq.className="sq "+(((f+rank)%2) ? "light":"dark");
+      if(selected===coord) sq.classList.add("sel");
+      sq.dataset.coord=coord;
+      sq.textContent=PIECES[pieces[coord]]||"";
+      sq.onclick=()=>clickSquare(coord,pieces[coord]);
+      boardEl.appendChild(sq);
+    }
+  }
+}
+
+async function clickSquare(coord,piece){
+  if(busy) return;
+  if(!selected){
+    if(piece && piece===piece.toUpperCase()){
+      selected=coord; draw();
+    }
+    return;
+  }
+  if(coord===selected){selected=null;draw();return}
+
+  let move=selected+coord;
+  // automatic queen promotion
+  if((selected[1]==="7" && coord[1]==="8")) move += "q";
+
+  selected=null; draw();
+  busy=true;
+  statusEl.textContent="🐟 The fish is thinking... or preparing a disaster.";
+
+  try{
+    const res=await fetch("/move",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        move,
+        bad_probability:Number(chaos.value)/100,
+        think_time:Number(think.value)/100
+      })
+    });
+    const data=await res.json();
+    if(!res.ok || !data.ok) throw new Error(data.error||"Unknown error");
+
+    fen=data.fen;
+    modeEl.textContent=data.mode||"GAME OVER";
+    modeEl.className="badge "+(data.mode==="STOCKFISH"?"good":data.mode==="RANDOMFISH"?"bad":"");
+    if(data.game_over){
+      statusEl.textContent=`Game over: ${data.result}`;
+    }else{
+      const ev = data.evaluation==null ? "?" : (data.evaluation/100).toFixed(2);
+      statusEl.innerHTML=`Fish played <code>${data.fish_move}</code><br>Mode: <strong>${data.mode}</strong> · chosen-move eval ≈ <strong>${ev}</strong>`;
+    }
+  }catch(err){
+    statusEl.textContent="⚠️ "+err.message;
+  }finally{
+    busy=false; draw();
+  }
+}
+
+document.getElementById("reset").onclick=async()=>{
+  const res=await fetch("/reset",{method:"POST"});
+  const data=await res.json();
+  fen=data.fen; selected=null; modeEl.textContent="WAITING"; modeEl.className="badge";
+  statusEl.textContent="New game. You are White.";
+  draw();
+};
+
+async function boot(){
+  const res=await fetch("/state");
+  const data=await res.json();
+  fen=data.fen; draw();
+}
+boot();
+</script>
+</body>
+</html>
